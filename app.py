@@ -54,17 +54,20 @@ with tab2:
 # -------------------------------------------------------------------
 if st.button("✨ Generate Summary", type="primary"):
     if not document_text.strip():
-        st.warning("Please paste some text or upload a document first.")
-    else:
-        try:
-            with st.spinner("Analyzing document and writing summary..."):
-                # Tokenize input text
-                inputs = tokenizer([document_text], max_length=1024, return_tensors="pt", truncation=True)
-                
-                # Generate summary token IDs directly from model
+       # Calculate dynamic min/max length based on document size
+                input_length = inputs["input_ids"].shape[1]
+                max_len = min(150, max(40, int(input_length * 0.6)))
+                min_len = min(20, max(10, int(input_length * 0.2)))
+
+                # Generate high-quality summary
                 summary_ids = model.generate(
                     inputs["input_ids"],
-                    max_length=150,
+                    max_length=max_len,
+                    min_length=min_len,
+                    no_repeat_ngram_size=3,  # Prevents repetitive phrases
+                    num_beams=4,
+                    early_stopping=True
+                )
                     min_length=30,
                     length_penalty=2.0,
                     num_beams=4,
