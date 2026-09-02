@@ -1,6 +1,5 @@
 streamlit
-PyPDF2
 transformers
-sentencepiece
---find-links https://download.pytorch.org/whl/cpu
 torch
+PyPDF2
+sentencepiece
