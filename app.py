@@ -6,9 +6,9 @@ import re
 import html
 
 
-# ==========================================================
-# PAGE SETTINGS
-# ==========================================================
+# =========================================================
+# PAGE CONFIGURATION
+# =========================================================
 
 st.set_page_config(
     page_title="Smart Text & Document Summarizer",
@@ -17,9 +17,9 @@ st.set_page_config(
 )
 
 
-# ==========================================================
-# CUSTOM DESIGN
-# ==========================================================
+# =========================================================
+# CSS
+# =========================================================
 
 st.markdown(
     """
@@ -29,7 +29,6 @@ st.markdown(
         text-align: center;
         font-size: 42px;
         font-weight: bold;
-        margin-top: 10px;
         margin-bottom: 5px;
     }
 
@@ -41,22 +40,18 @@ st.markdown(
     }
 
     .summary-box {
-        background-color: #ffffff;
-        color: #111111;
+        background-color: #ffffff !important;
+        color: #111111 !important;
         border: 2px solid #cccccc;
         border-radius: 12px;
         padding: 25px;
         font-size: 18px;
         line-height: 1.8;
         min-height: 150px;
-        margin-top: 10px;
+        overflow-wrap: break-word;
     }
 
-    .summary-box p {
-        color: #111111 !important;
-    }
-
-    .summary-box span {
+    .summary-box * {
         color: #111111 !important;
     }
 
@@ -66,9 +61,9 @@ st.markdown(
 )
 
 
-# ==========================================================
+# =========================================================
 # TITLE
-# ==========================================================
+# =========================================================
 
 st.markdown(
     '<div class="title">Smart Text & Document Summarizer</div>',
@@ -83,17 +78,15 @@ st.markdown(
 )
 
 
-# ==========================================================
+# =========================================================
 # MODEL
-# ==========================================================
+# =========================================================
 
 MODEL_NAME = "sshleifer/distilbart-cnn-12-6"
 
 
 @st.cache_resource
 def load_model():
-
-    st.info("Loading AI summarization model for the first time...")
 
     tokenizer = AutoTokenizer.from_pretrained(
         MODEL_NAME
@@ -103,19 +96,19 @@ def load_model():
         MODEL_NAME
     )
 
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
+    device = torch.device(
+        "cuda" if torch.cuda.is_available()
+        else "cpu"
+    )
 
     model.to(device)
 
     return tokenizer, model, device
 
 
-# ==========================================================
+# =========================================================
 # CLEAN TEXT
-# ==========================================================
+# =========================================================
 
 def clean_text(text):
 
@@ -128,9 +121,9 @@ def clean_text(text):
     return text.strip()
 
 
-# ==========================================================
-# PDF READER
-# ==========================================================
+# =========================================================
+# READ PDF
+# =========================================================
 
 def read_pdf(file):
 
@@ -158,9 +151,9 @@ def read_pdf(file):
         return ""
 
 
-# ==========================================================
-# TXT READER
-# ==========================================================
+# =========================================================
+# READ TXT
+# =========================================================
 
 def read_txt(file):
 
@@ -172,7 +165,6 @@ def read_txt(file):
             text = data.decode("utf-8")
 
         except UnicodeDecodeError:
-
             text = data.decode("latin-1")
 
         return clean_text(text)
@@ -186,11 +178,14 @@ def read_txt(file):
         return ""
 
 
-# ==========================================================
-# TEXT CHUNKING
-# ==========================================================
+# =========================================================
+# SPLIT LONG TEXT
+# =========================================================
 
-def create_chunks(text, words_per_chunk=300):
+def create_chunks(
+    text,
+    words_per_chunk=300
+):
 
     words = text.split()
 
@@ -212,9 +207,9 @@ def create_chunks(text, words_per_chunk=300):
     return chunks
 
 
-# ==========================================================
+# =========================================================
 # SUMMARIZE ONE CHUNK
-# ==========================================================
+# =========================================================
 
 def summarize_chunk(
     text,
@@ -226,16 +221,16 @@ def summarize_chunk(
 
     if summary_type == "Short":
 
-        minimum_length = 20
-        maximum_length = 80
+        min_length = 20
+        max_length = 80
 
     else:
 
-        minimum_length = 35
-        maximum_length = 130
+        min_length = 35
+        max_length = 130
 
 
-    encoded = tokenizer(
+    inputs = tokenizer(
         text,
         return_tensors="pt",
         truncation=True,
@@ -243,22 +238,22 @@ def summarize_chunk(
     )
 
 
-    input_ids = encoded[
+    input_ids = inputs[
         "input_ids"
     ].to(device)
 
-    attention_mask = encoded[
+    attention_mask = inputs[
         "attention_mask"
     ].to(device)
 
 
     with torch.no_grad():
 
-        output = model.generate(
+        summary_ids = model.generate(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            max_length=maximum_length,
-            min_length=minimum_length,
+            max_length=max_length,
+            min_length=min_length,
             num_beams=4,
             length_penalty=2.0,
             no_repeat_ngram_size=3,
@@ -266,36 +261,39 @@ def summarize_chunk(
         )
 
 
-    result = tokenizer.decode(
-        output[0],
+    summary = tokenizer.decode(
+        summary_ids[0],
         skip_special_tokens=True
     )
 
-    return result.strip()
+    return summary.strip()
 
 
-# ==========================================================
-# COMPLETE SUMMARIZATION
-# ==========================================================
+# =========================================================
+# GENERATE SUMMARY
+# =========================================================
 
-def create_summary(text, summary_type):
+def generate_summary(
+    text,
+    summary_type
+):
 
     tokenizer, model, device = load_model()
 
     chunks = create_chunks(
         text,
-        words_per_chunk=300
+        300
     )
 
     summaries = []
 
     progress = st.progress(0)
 
-    total_chunks = len(chunks)
+    total = len(chunks)
 
-    for number, chunk in enumerate(chunks):
+    for i, chunk in enumerate(chunks):
 
-        result = summarize_chunk(
+        summary = summarize_chunk(
             chunk,
             tokenizer,
             model,
@@ -303,12 +301,11 @@ def create_summary(text, summary_type):
             summary_type
         )
 
-        if result:
-
-            summaries.append(result)
+        if summary:
+            summaries.append(summary)
 
         progress.progress(
-            (number + 1) / total_chunks
+            (i + 1) / total
         )
 
     progress.empty()
@@ -316,16 +313,16 @@ def create_summary(text, summary_type):
     return " ".join(summaries)
 
 
-# ==========================================================
+# =========================================================
 # SIDEBAR
-# ==========================================================
+# =========================================================
 
 with st.sidebar:
 
-    st.header("Settings")
+    st.header("Summarizer Settings")
 
     summary_type = st.radio(
-        "Summary Type",
+        "Choose Summary Type",
         [
             "Short",
             "Detailed"
@@ -334,36 +331,38 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.subheader("Supported Files")
+    st.subheader("Supported Inputs")
 
     st.write(
-        "PDF\n\nTXT\n\nPasted Text"
+        "• Pasted Text\n\n"
+        "• PDF Documents\n\n"
+        "• TXT Files"
     )
 
     st.markdown("---")
 
     st.info(
-        "Uses a transformer-based NLP model "
-        "for automatic summarization."
+        "Powered by Python, Streamlit "
+        "and Transformer-based NLP."
     )
 
 
-# ==========================================================
+# =========================================================
 # TEXT INPUT
-# ==========================================================
+# =========================================================
 
-st.subheader("Enter Text")
+st.subheader("Enter Your Text")
 
 text_input = st.text_area(
     "Paste your text below:",
     height=250,
-    placeholder="Paste an article, report, notes or any long text here..."
+    placeholder="Paste an article, report or any long text here..."
 )
 
 
-# ==========================================================
+# =========================================================
 # FILE UPLOAD
-# ==========================================================
+# =========================================================
 
 st.subheader("Upload Document")
 
@@ -376,9 +375,9 @@ uploaded_file = st.file_uploader(
 )
 
 
-# ==========================================================
-# GET DOCUMENT TEXT
-# ==========================================================
+# =========================================================
+# EXTRACT DOCUMENT
+# =========================================================
 
 document_text = ""
 
@@ -398,9 +397,9 @@ if uploaded_file is not None:
         )
 
 
-# ==========================================================
+# =========================================================
 # DOCUMENT INFORMATION
-# ==========================================================
+# =========================================================
 
 if document_text:
 
@@ -414,9 +413,9 @@ if document_text:
     )
 
 
-# ==========================================================
-# BUTTON
-# ==========================================================
+# =========================================================
+# GENERATE BUTTON
+# =========================================================
 
 st.markdown("---")
 
@@ -427,13 +426,11 @@ generate = st.button(
 )
 
 
-# ==========================================================
-# GENERATE SUMMARY
-# ==========================================================
+# =========================================================
+# PROCESS SUMMARY
+# =========================================================
 
 if generate:
-
-    # Choose document or pasted text
 
     if document_text:
 
@@ -448,17 +445,16 @@ if generate:
     else:
 
         st.warning(
-            "Please paste some text or upload a document."
+            "Please paste text or upload a document."
         )
 
         st.stop()
 
 
-    # Check length
-
     word_count = len(
         text.split()
     )
+
 
     if word_count < 30:
 
@@ -468,8 +464,6 @@ if generate:
 
         st.stop()
 
-
-    # Limit extremely large documents
 
     if word_count > 5000:
 
@@ -483,7 +477,9 @@ if generate:
         )
 
 
-    # Generate
+    # =====================================================
+    # GENERATE
+    # =====================================================
 
     with st.spinner(
         "AI is generating your summary..."
@@ -491,7 +487,7 @@ if generate:
 
         try:
 
-            summary = create_summary(
+            summary = generate_summary(
                 text,
                 summary_type
             )
@@ -499,7 +495,8 @@ if generate:
         except Exception as e:
 
             st.error(
-                "Something went wrong while generating the summary."
+                "An error occurred while generating "
+                "the summary."
             )
 
             st.exception(e)
@@ -507,17 +504,15 @@ if generate:
             st.stop()
 
 
-    # ======================================================
-    # SHOW SUMMARY
-    # ======================================================
+    # =====================================================
+    # DISPLAY SUMMARY
+    # =====================================================
 
     if summary:
 
         st.subheader(
             f"{summary_type} Summary"
         )
-
-        # Escape generated text safely
 
         safe_summary = html.escape(
             summary
@@ -533,9 +528,9 @@ if generate:
         )
 
 
-        # ==================================================
+        # =================================================
         # STATISTICS
-        # ==================================================
+        # =================================================
 
         original_words = len(
             text.split()
@@ -547,7 +542,10 @@ if generate:
 
         reduction = (
             1 -
-            summary_words / original_words
+            (
+                summary_words /
+                original_words
+            )
         ) * 100
 
 
@@ -580,9 +578,9 @@ if generate:
             )
 
 
-        # ==================================================
+        # =================================================
         # DOWNLOAD
-        # ==================================================
+        # =================================================
 
         st.download_button(
             "Download Summary",
@@ -596,19 +594,23 @@ if generate:
     else:
 
         st.error(
-            "No summary was generated. Please try again."
+            "No summary was generated."
         )
 
 
-# ==========================================================
+# =========================================================
 # FOOTER
-# ==========================================================
+# =========================================================
 
 st.markdown("---")
 
 st.markdown(
     """
-    <div style="text-align:center; color:#888888;">
+    <div style="
+        text-align:center;
+        color:#888888;
+        padding:15px;
+    ">
         Smart Text & Document Summarizer
         <br>
         NLP • Transformers • Python • Streamlit
