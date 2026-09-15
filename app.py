@@ -1,620 +1,138 @@
 import streamlit as st
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-import torch
 import PyPDF2
-import re
-import html
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.llms import HuggingFacePipeline
+from transformers import pipeline
+import openai
+import os
 
+# Page Configuration
+st.set_page_config(page_title="Smart Doc Summarizer", page_icon="📝", layout="wide")
 
-# =========================================================
-# PAGE CONFIGURATION
-# =========================================================
+st.title("📝 Advanced Smart Text & Document Summarizer")
+st.caption("Custom role-based summaries, action item extraction, and hybrid local/cloud execution.")
 
-st.set_page_config(
-    page_title="Smart Text & Document Summarizer",
-    page_icon="📝",
-    layout="wide"
+# Sidebar Settings
+st.sidebar.header("⚙️ Configuration")
+
+# Engine Selection
+execution_mode = st.sidebar.radio(
+    "Choose Summarization Engine:",
+    ["OpenAI (Cloud - Fast & Advanced)", "HuggingFace BART (Local - Private & Free)"]
 )
 
+# Role / Persona Selection
+target_persona = st.sidebar.selectbox(
+    "Target Persona Output:",
+    ["General Summary", "Executive (Action Items & ROI)", "Technical (Specs & Code)", "Student (Key Concepts & Quiz Prep)"]
+)
 
-# =========================================================
-# CSS
-# =========================================================
+# Output Format Selection
+summary_length = st.sidebar.select_slider(
+    "Summary Detail Level:",
+    options=["Brief (Bullet Points)", "Medium (Structured Sections)", "Detailed (In-depth Analysis)"]
+)
 
-st.markdown(
+api_key = ""
+if "OpenAI" in execution_mode:
+    api_key = st.sidebar.text_input("Enter OpenAI API Key:", type="password")
+
+# --- Helper Functions ---
+
+def extract_text_from_pdf(pdf_file):
+    pdf_reader = PyPDF2.PdfReader(pdf_file)
+    extracted_text = ""
+    for page in pdf_reader.pages:
+        text = page.extract_text()
+        if text:
+            extracted_text += text + "\n"
+    return extracted_text
+
+def summarize_with_openai(text, persona, length, key):
+    client = openai.OpenAI(api_key=key)
+    prompt = f"""
+    You are an expert document summarizer. Summarize the following document according to these criteria:
+    - Persona: {persona}
+    - Detail Level: {length}
+    
+    Structure the response with clear headings, core key takeaways, and an 'Actionable Items' section if applicable.
+    
+    Document Text:
+    {text[:12000]} 
     """
-    <style>
-
-    .title {
-        text-align: center;
-        font-size: 42px;
-        font-weight: bold;
-        margin-bottom: 5px;
-    }
-
-    .subtitle {
-        text-align: center;
-        font-size: 18px;
-        color: #777777;
-        margin-bottom: 30px;
-    }
-
-    .summary-box {
-        background-color: #ffffff !important;
-        color: #111111 !important;
-        border: 2px solid #cccccc;
-        border-radius: 12px;
-        padding: 25px;
-        font-size: 18px;
-        line-height: 1.8;
-        min-height: 150px;
-        overflow-wrap: break-word;
-    }
-
-    .summary-box * {
-        color: #111111 !important;
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-
-# =========================================================
-# TITLE
-# =========================================================
-
-st.markdown(
-    '<div class="title">Smart Text & Document Summarizer</div>',
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    '<div class="subtitle">'
-    'An AI-powered application for summarizing text and documents'
-    '</div>',
-    unsafe_allow_html=True
-)
-
-
-# =========================================================
-# MODEL
-# =========================================================
-
-MODEL_NAME = "sshleifer/distilbart-cnn-12-6"
-
+    
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3
+    )
+    return response.choices[0].message.content
 
 @st.cache_resource
-def load_model():
+def load_local_model():
+    # Downloads BART summarization pipeline locally
+    summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+    return summarizer
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        MODEL_NAME
-    )
+def summarize_with_local(text, length):
+    summarizer = load_local_model()
+    # Chunk text to avoid token overflow in local transformer
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    docs = splitter.split_text(text)
+    
+    max_len = 150 if "Detailed" in length else 75
+    min_len = 50 if "Detailed" in length else 25
+    
+    summary = summarizer(docs[0], max_length=max_len, min_length=min_len, do_sample=False)
+    return summary[0]['summary_text']
 
-    model = AutoModelForSeq2SeqLM.from_pretrained(
-        MODEL_NAME
-    )
+# --- Main App Interface ---
 
-    device = torch.device(
-        "cuda" if torch.cuda.is_available()
-        else "cpu"
-    )
+tab1, tab2 = st.tabs(["📄 Document Upload", "✏️ Paste Raw Text"])
+input_text = ""
 
-    model.to(device)
+with tab1:
+    uploaded_file = st.file_uploader("Upload a PDF or TXT file", type=["pdf", "txt"])
+    if uploaded_file is not None:
+        if uploaded_file.name.endswith(".pdf"):
+            input_text = extract_text_from_pdf(uploaded_file)
+        else:
+            input_text = str(uploaded_file.read().decode("utf-8"))
+        st.success(f"File uploaded successfully! Extracted ~{len(input_text.split())} words.")
 
-    return tokenizer, model, device
+with tab2:
+    pasted_text = st.text_area("Paste long article text here...", height=250)
+    if pasted_text:
+        input_text = pasted_text
 
-
-# =========================================================
-# CLEAN TEXT
-# =========================================================
-
-def clean_text(text):
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    )
-
-    return text.strip()
-
-
-# =========================================================
-# READ PDF
-# =========================================================
-
-def read_pdf(file):
-
-    try:
-
-        reader = PyPDF2.PdfReader(file)
-
-        text = ""
-
-        for page in reader.pages:
-
-            page_text = page.extract_text()
-
-            if page_text:
-                text += page_text + "\n"
-
-        return clean_text(text)
-
-    except Exception as e:
-
-        st.error(
-            f"Error reading PDF: {e}"
-        )
-
-        return ""
-
-
-# =========================================================
-# READ TXT
-# =========================================================
-
-def read_txt(file):
-
-    try:
-
-        data = file.read()
-
-        try:
-            text = data.decode("utf-8")
-
-        except UnicodeDecodeError:
-            text = data.decode("latin-1")
-
-        return clean_text(text)
-
-    except Exception as e:
-
-        st.error(
-            f"Error reading TXT file: {e}"
-        )
-
-        return ""
-
-
-# =========================================================
-# SPLIT LONG TEXT
-# =========================================================
-
-def create_chunks(
-    text,
-    words_per_chunk=300
-):
-
-    words = text.split()
-
-    chunks = []
-
-    for i in range(
-        0,
-        len(words),
-        words_per_chunk
-    ):
-
-        chunk = " ".join(
-            words[i:i + words_per_chunk]
-        )
-
-        if chunk.strip():
-            chunks.append(chunk)
-
-    return chunks
-
-
-# =========================================================
-# SUMMARIZE ONE CHUNK
-# =========================================================
-
-def summarize_chunk(
-    text,
-    tokenizer,
-    model,
-    device,
-    summary_type
-):
-
-    if summary_type == "Short":
-
-        min_length = 20
-        max_length = 80
-
+# Execution Trigger
+if st.button("🚀 Generate Specialized Summary"):
+    if not input_text.strip():
+        st.warning("Please upload a file or paste text first.")
     else:
-
-        min_length = 35
-        max_length = 130
-
-
-    inputs = tokenizer(
-        text,
-        return_tensors="pt",
-        truncation=True,
-        max_length=1024
-    )
-
-
-    input_ids = inputs[
-        "input_ids"
-    ].to(device)
-
-    attention_mask = inputs[
-        "attention_mask"
-    ].to(device)
-
-
-    with torch.no_grad():
-
-        summary_ids = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_length=max_length,
-            min_length=min_length,
-            num_beams=4,
-            length_penalty=2.0,
-            no_repeat_ngram_size=3,
-            early_stopping=True
-        )
-
-
-    summary = tokenizer.decode(
-        summary_ids[0],
-        skip_special_tokens=True
-    )
-
-    return summary.strip()
-
-
-# =========================================================
-# GENERATE SUMMARY
-# =========================================================
-
-def generate_summary(
-    text,
-    summary_type
-):
-
-    tokenizer, model, device = load_model()
-
-    chunks = create_chunks(
-        text,
-        300
-    )
-
-    summaries = []
-
-    progress = st.progress(0)
-
-    total = len(chunks)
-
-    for i, chunk in enumerate(chunks):
-
-        summary = summarize_chunk(
-            chunk,
-            tokenizer,
-            model,
-            device,
-            summary_type
-        )
-
-        if summary:
-            summaries.append(summary)
-
-        progress.progress(
-            (i + 1) / total
-        )
-
-    progress.empty()
-
-    return " ".join(summaries)
-
-
-# =========================================================
-# SIDEBAR
-# =========================================================
-
-with st.sidebar:
-
-    st.header("Summarizer Settings")
-
-    summary_type = st.radio(
-        "Choose Summary Type",
-        [
-            "Short",
-            "Detailed"
-        ]
-    )
-
-    st.markdown("---")
-
-    st.subheader("Supported Inputs")
-
-    st.write(
-        "• Pasted Text\n\n"
-        "• PDF Documents\n\n"
-        "• TXT Files"
-    )
-
-    st.markdown("---")
-
-    st.info(
-        "Powered by Python, Streamlit "
-        "and Transformer-based NLP."
-    )
-
-
-# =========================================================
-# TEXT INPUT
-# =========================================================
-
-st.subheader("Enter Your Text")
-
-text_input = st.text_area(
-    "Paste your text below:",
-    height=250,
-    placeholder="Paste an article, report or any long text here..."
-)
-
-
-# =========================================================
-# FILE UPLOAD
-# =========================================================
-
-st.subheader("Upload Document")
-
-uploaded_file = st.file_uploader(
-    "Upload a PDF or TXT file",
-    type=[
-        "pdf",
-        "txt"
-    ]
-)
-
-
-# =========================================================
-# EXTRACT DOCUMENT
-# =========================================================
-
-document_text = ""
-
-
-if uploaded_file is not None:
-
-    if uploaded_file.name.lower().endswith(".pdf"):
-
-        document_text = read_pdf(
-            uploaded_file
-        )
-
-    elif uploaded_file.name.lower().endswith(".txt"):
-
-        document_text = read_txt(
-            uploaded_file
-        )
-
-
-# =========================================================
-# DOCUMENT INFORMATION
-# =========================================================
-
-if document_text:
-
-    st.success(
-        f"Successfully loaded: {uploaded_file.name}"
-    )
-
-    st.info(
-        f"Document contains approximately "
-        f"{len(document_text.split())} words."
-    )
-
-
-# =========================================================
-# GENERATE BUTTON
-# =========================================================
-
-st.markdown("---")
-
-generate = st.button(
-    "Generate Summary",
-    type="primary",
-    use_container_width=True
-)
-
-
-# =========================================================
-# PROCESS SUMMARY
-# =========================================================
-
-if generate:
-
-    if document_text:
-
-        text = document_text
-
-    elif text_input.strip():
-
-        text = clean_text(
-            text_input
-        )
-
-    else:
-
-        st.warning(
-            "Please paste text or upload a document."
-        )
-
-        st.stop()
-
-
-    word_count = len(
-        text.split()
-    )
-
-
-    if word_count < 30:
-
-        st.warning(
-            "Please provide at least 30 words."
-        )
-
-        st.stop()
-
-
-    if word_count > 5000:
-
-        st.warning(
-            "The document is larger than 5000 words. "
-            "Only the first 5000 words will be processed."
-        )
-
-        text = " ".join(
-            text.split()[:5000]
-        )
-
-
-    # =====================================================
-    # GENERATE
-    # =====================================================
-
-    with st.spinner(
-        "AI is generating your summary..."
-    ):
-
-        try:
-
-            summary = generate_summary(
-                text,
-                summary_type
-            )
-
-        except Exception as e:
-
-            st.error(
-                "An error occurred while generating "
-                "the summary."
-            )
-
-            st.exception(e)
-
-            st.stop()
-
-
-    # =====================================================
-    # DISPLAY SUMMARY
-    # =====================================================
-
-    if summary:
-
-        st.subheader(
-            f"{summary_type} Summary"
-        )
-
-        safe_summary = html.escape(
-            summary
-        )
-
-        st.markdown(
-            f"""
-            <div class="summary-box">
-                {safe_summary}
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-
-        # =================================================
-        # STATISTICS
-        # =================================================
-
-        original_words = len(
-            text.split()
-        )
-
-        summary_words = len(
-            summary.split()
-        )
-
-        reduction = (
-            1 -
-            (
-                summary_words /
-                original_words
-            )
-        ) * 100
-
-
-        st.markdown("---")
-
-        col1, col2, col3 = st.columns(3)
-
-
-        with col1:
-
-            st.metric(
-                "Original Words",
-                original_words
-            )
-
-
-        with col2:
-
-            st.metric(
-                "Summary Words",
-                summary_words
-            )
-
-
-        with col3:
-
-            st.metric(
-                "Reduction",
-                f"{reduction:.1f}%"
-            )
-
-
-        # =================================================
-        # DOWNLOAD
-        # =================================================
-
-        st.download_button(
-            "Download Summary",
-            data=summary,
-            file_name="smart_summary.txt",
-            mime="text/plain",
-            use_container_width=True
-        )
-
-
-    else:
-
-        st.error(
-            "No summary was generated."
-        )
-
-
-# =========================================================
-# FOOTER
-# =========================================================
-
-st.markdown("---")
-
-st.markdown(
-    """
-    <div style="
-        text-align:center;
-        color:#888888;
-        padding:15px;
-    ">
-        Smart Text & Document Summarizer
-        <br>
-        NLP • Transformers • Python • Streamlit
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+        with st.spinner("Processing document..."):
+            try:
+                if "OpenAI" in execution_mode:
+                    if not api_key:
+                        st.error("Please enter a valid OpenAI API key in the sidebar.")
+                    else:
+                        result = summarize_with_openai(input_text, target_persona, summary_length, api_key)
+                        
+                        st.markdown("### 📊 Generated Summary")
+                        st.markdown(result)
+                        
+                        # Added Value Feature: Export functionality
+                        st.download_button(
+                            label="📥 Download Summary as Markdown",
+                            data=result,
+                            file_name="summary.md",
+                            mime="text/markdown"
+                        )
+                else:
+                    result = summarize_with_local(input_text, summary_length)
+                    st.markdown("### 📊 Local BART Model Summary")
+                    st.info("Note: Persona tuning is limited under the free offline transformer pipeline.")
+                    st.write(result)
+                    
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
