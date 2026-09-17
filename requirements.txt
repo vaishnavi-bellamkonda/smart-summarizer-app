@@ -1,7 +1,5 @@
 streamlit
 PyPDF2
-langchain
-langchain-community
 transformers
 torch
 openai
