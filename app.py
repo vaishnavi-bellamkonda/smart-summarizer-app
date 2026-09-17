@@ -1,43 +1,45 @@
 import streamlit as st
-import PyPDF2
-from transformers import pipeline
-import openai
-import os
+import pypdf
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import torch
 
-# Page Configuration
-st.set_page_config(page_title="Smart Doc Summarizer", page_icon="📝", layout="wide")
+# Configure Streamlit page
+st.set_page_config(
+    page_title="Advanced Smart Text & Document Summarizer",
+    page_icon="📝",
+    layout="wide"
+)
 
 st.title("📝 Advanced Smart Text & Document Summarizer")
 st.caption("Custom role-based summaries, action item extraction, and hybrid local/cloud execution.")
 
-# Sidebar Settings
+# ==================== SIDEBAR CONFIGURATION ====================
 st.sidebar.header("⚙️ Configuration")
 
-# Engine Selection
-execution_mode = st.sidebar.radio(
+engine = st.sidebar.radio(
     "Choose Summarization Engine:",
     ["OpenAI (Cloud - Fast & Advanced)", "HuggingFace BART (Local - Private & Free)"]
 )
 
-# Role / Persona Selection
-target_persona = st.sidebar.selectbox(
+persona = st.sidebar.selectbox(
     "Target Persona Output:",
-    ["General Summary", "Executive (Action Items & ROI)", "Technical (Specs & Code)", "Student (Key Concepts & Quiz Prep)"]
+    ["General Summary", "Executive Brief", "Action Items & Next Steps", "Technical Overview"]
 )
 
-# Output Format Selection
-summary_length = st.sidebar.select_slider(
+detail_level = st.sidebar.select_slider(
     "Summary Detail Level:",
-    options=["Brief (Bullet Points)", "Medium (Structured Sections)", "Detailed (In-depth Analysis)"]
+    options=["Brief (Bullet Points)", "Balanced", "Detailed Report"]
 )
 
-api_key = ""
-if "OpenAI" in execution_mode:
-    api_key = st.sidebar.text_input("Enter OpenAI API Key:", type="password")
+openai_api_key = ""
+if "OpenAI" in engine:
+    openai_api_key = st.sidebar.text_input("Enter OpenAI API Key:", type="password")
 
-# --- Helper Functions ---
+# ==================== HELPER FUNCTIONS ====================
+
 def extract_text_from_pdf(pdf_file):
-    pdf_reader = PyPDF2.PdfReader(pdf_file)
+    """Extract text from uploaded PDF document."""
+    pdf_reader = pypdf.PdfReader(pdf_file)
     extracted_text = ""
     for page in pdf_reader.pages:
         text = page.extract_text()
@@ -45,92 +47,110 @@ def extract_text_from_pdf(pdf_file):
             extracted_text += text + "\n"
     return extracted_text
 
-def chunk_text(text, chunk_size=1000):
-    """Simple built-in text chunker replacing langchain dependency."""
-    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
-
-def summarize_with_openai(text, persona, length, key):
-    client = openai.OpenAI(api_key=key)
-    prompt = f"""
-    You are an expert document summarizer. Summarize the following document according to these criteria:
-    - Persona: {persona}
-    - Detail Level: {length}
-    
-    Structure the response with clear headings, core key takeaways, and an 'Actionable Items' section if applicable.
-    
-    Document Text:
-    {text[:12000]} 
-    """
-    
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
-    )
-    return response.choices[0].message.content
 
 @st.cache_resource
-def load_local_model():
-    # Downloads BART summarization pipeline locally
-    summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-    return summarizer
+def load_hf_model():
+    """Load and cache Hugging Face BART model and tokenizer locally."""
+    model_name = "facebook/bart-large-cnn"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+    return tokenizer, model
 
-def summarize_with_local(text, length):
-    summarizer = load_local_model()
-    docs = chunk_text(text, chunk_size=1000)
-    
-    max_len = 150 if "Detailed" in length else 75
-    min_len = 50 if "Detailed" in length else 25
-    
-    summary = summarizer(docs[0], max_length=max_len, min_length=min_len, do_sample=False)
-    return summary[0]['summary_text']
 
-# --- Main App Interface ---
+def summarize_with_hf(text, detail_level):
+    """Summarize text locally using Hugging Face BART without relying on pipeline task names."""
+    tokenizer, model = load_hf_model()
+
+    # Determine max/min length based on detail level
+    max_length_map = {
+        "Brief (Bullet Points)": 80,
+        "Balanced": 150,
+        "Detailed Report": 300
+    }
+    max_len = max_length_map.get(detail_level, 150)
+    min_len = int(max_len * 0.3)
+
+    # Tokenize input text (chunking to 1024 tokens max for BART)
+    inputs = tokenizer(text, return_tensors="pt", max_length=1024, truncation=True)
+    
+    # Generate summary tokens
+    summary_ids = model.generate(
+        inputs["input_ids"],
+        max_length=max_len,
+        min_length=min_len,
+        num_beams=4,
+        early_stopping=True
+    )
+
+    summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+    return summary
+
+
+def summarize_with_openai(text, api_key, persona, detail_level):
+    """Summarize text using OpenAI API."""
+    import openai
+    client = openai.OpenAI(api_key=api_key)
+
+    prompt = f"""
+    You are an expert assistant. Summarize the following document.
+    Target Audience/Persona: {persona}
+    Detail Level: {detail_level}
+
+    Document Text:
+    {text[:12000]}  # Truncated to fit token limits
+    """
+
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": "You are a professional text summarizer."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.3
+    )
+
+    return response.choices[0].message.content
+
+
+# ==================== MAIN UI & INPUTS ====================
 
 tab1, tab2 = st.tabs(["📄 Document Upload", "✏️ Paste Raw Text"])
-input_text = ""
+
+text_content = ""
 
 with tab1:
     uploaded_file = st.file_uploader("Upload a PDF or TXT file", type=["pdf", "txt"])
     if uploaded_file is not None:
-        if uploaded_file.name.endswith(".pdf"):
-            input_text = extract_text_from_pdf(uploaded_file)
+        if uploaded_file.type == "application/pdf":
+            text_content = extract_text_from_pdf(uploaded_file)
         else:
-            input_text = str(uploaded_file.read().decode("utf-8"))
-        st.success(f"File uploaded successfully! Extracted ~{len(input_text.split())} words.")
+            text_content = uploaded_file.read().decode("utf-8")
+
+        word_count = len(text_content.split())
+        st.success(f"File uploaded successfully! Extracted ~{word_count} words.")
 
 with tab2:
-    pasted_text = st.text_area("Paste long article text here...", height=250)
+    pasted_text = st.text_area("Paste text here for summarization:", height=250)
     if pasted_text:
-        input_text = pasted_text
+        text_content = pasted_text
 
-# Execution Trigger
-if st.button("🚀 Generate Specialized Summary"):
-    if not input_text.strip():
-        st.warning("Please upload a file or paste text first.")
+# ==================== SUMMARIZE ACTION ====================
+
+if st.button("🚀 Generate Specialized Summary", type="primary"):
+    if not text_content.strip():
+        st.error("Please upload a file or paste text first.")
+    elif "OpenAI" in engine and not openai_api_key.strip():
+        st.error("Please enter a valid OpenAI API key in the sidebar.")
     else:
-        with st.spinner("Processing document..."):
+        with st.spinner("Generating summary... Please wait."):
             try:
-                if "OpenAI" in execution_mode:
-                    if not api_key:
-                        st.error("Please enter a valid OpenAI API key in the sidebar.")
-                    else:
-                        result = summarize_with_openai(input_text, target_persona, summary_length, api_key)
-                        
-                        st.markdown("### 📊 Generated Summary")
-                        st.markdown(result)
-                        
-                        st.download_button(
-                            label="📥 Download Summary as Markdown",
-                            data=result,
-                            file_name="summary.md",
-                            mime="text/markdown"
-                        )
+                if "OpenAI" in engine:
+                    summary = summarize_with_openai(text_content, openai_api_key, persona, detail_level)
                 else:
-                    result = summarize_with_local(input_text, summary_length)
-                    st.markdown("### 📊 Local BART Model Summary")
-                    st.info("Note: Persona tuning is limited under the free offline transformer pipeline.")
-                    st.write(result)
-                    
+                    summary = summarize_with_hf(text_content, detail_level)
+
+                st.subheader("📌 Generated Summary")
+                st.markdown(summary)
+
             except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
+                st.error(f"An error occurred during summarization: {str(e)}")
