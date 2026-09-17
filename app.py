@@ -1,7 +1,5 @@
 import streamlit as st
 import PyPDF2
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.llms import HuggingFacePipeline
 from transformers import pipeline
 import openai
 import os
@@ -38,7 +36,6 @@ if "OpenAI" in execution_mode:
     api_key = st.sidebar.text_input("Enter OpenAI API Key:", type="password")
 
 # --- Helper Functions ---
-
 def extract_text_from_pdf(pdf_file):
     pdf_reader = PyPDF2.PdfReader(pdf_file)
     extracted_text = ""
@@ -47,6 +44,10 @@ def extract_text_from_pdf(pdf_file):
         if text:
             extracted_text += text + "\n"
     return extracted_text
+
+def chunk_text(text, chunk_size=1000):
+    """Simple built-in text chunker replacing langchain dependency."""
+    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 def summarize_with_openai(text, persona, length, key):
     client = openai.OpenAI(api_key=key)
@@ -76,9 +77,7 @@ def load_local_model():
 
 def summarize_with_local(text, length):
     summarizer = load_local_model()
-    # Chunk text to avoid token overflow in local transformer
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    docs = splitter.split_text(text)
+    docs = chunk_text(text, chunk_size=1000)
     
     max_len = 150 if "Detailed" in length else 75
     min_len = 50 if "Detailed" in length else 25
@@ -121,7 +120,6 @@ if st.button("🚀 Generate Specialized Summary"):
                         st.markdown("### 📊 Generated Summary")
                         st.markdown(result)
                         
-                        # Added Value Feature: Export functionality
                         st.download_button(
                             label="📥 Download Summary as Markdown",
                             data=result,
